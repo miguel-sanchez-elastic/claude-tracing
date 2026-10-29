@@ -1,0 +1,22 @@
+name: Delete fork after upstream merge
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+jobs:
+  delete-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete this fork when the upstream pull request is merged
+        env:
+          GH_TOKEN: ${{ secrets.FORK_DELETE_TOKEN }}
+        run: |
+          merged_at="$(gh pr view 1 --repo hegerchr/claude-tracing --json mergedAt --jq '.mergedAt')"
+          if [ "$merged_at" = "null" ] || [ -z "$merged_at" ]; then
+            echo "Upstream pull request is not merged yet."
+            exit 0
+          fi
+          echo "Upstream pull request merged at $merged_at. Deleting the fork."
+          gh repo delete miguel-sanchez-elastic/claude-tracing --yes
