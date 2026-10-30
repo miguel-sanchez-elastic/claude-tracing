@@ -5,12 +5,24 @@ import os
 import sys
 from uuid import uuid4
 
-from anthropic import Anthropic
+from anthropic import APIStatusError, Anthropic
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+
+def api_error_message(error: APIStatusError) -> str:
+    """Return the provider's own explanation, without the raw response body."""
+    body = error.body
+    if isinstance(body, dict):
+        detail = body.get("error")
+        if isinstance(detail, dict):
+            message = detail.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+    return error.message
 
 
 def main() -> int:
@@ -66,11 +78,19 @@ def main() -> int:
             turn = [*history, {"role": "user", "content": prompt}]
             with trace.get_tracer(__name__).start_as_current_span("claude-chat-turn") as span:
                 trace_id = f"{span.get_span_context().trace_id:032x}"
-                message = client.messages.create(
-                    model=args.model,
-                    max_tokens=1024,
-                    messages=turn,
-                )
+                try:
+                    message = client.messages.create(
+                        model=args.model,
+                        max_tokens=1024,
+                        messages=turn,
+                    )
+                except APIStatusError as error:
+                    message_text = api_error_message(error)
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, message_text))
+                    print(f"Claude API error: {message_text}", file=sys.stderr)
+                    if error.request_id:
+                        print(f"Request ID: {error.request_id}", file=sys.stderr)
+                    return 1
             history = [*turn, {"role": "assistant", "content": message.content}]
             answer = "\n".join(block.text for block in message.content if block.type == "text")
             print(f"Claude: {answer}")
